@@ -64,7 +64,7 @@ pub mod skinny {
     use std::sync::{atomic::AtomicUsize, Arc, Condvar, Mutex};
     use mio;
 
-    pub fn reinterpret_cast<T, U>(obj: &T) -> &U {
+    fn reinterpret_cast<T, U>(obj: &T) -> &U {
         unsafe { &*(obj as *const T as *const U) }
     }
 
