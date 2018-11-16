@@ -49,7 +49,7 @@ pub fn new_registration(poll: &Poll, token: Token, ready: Ready, opt: PollOpt)
 // I/O objects in this crate (UnixListener, UnixStream) to fully integrate with
 // the Binding and Overlapped types from mio::windows.
 //
-// The accessor functions in this module transmute the mio::windows types into
+// The accessor functions in this module cast the mio::windows types into
 // "skinny" types with an identical memory layout to gain access to internals.
 //
 // For example, when UnixStream::write_bufs needs to use the same scatter/gather
@@ -58,25 +58,29 @@ pub fn new_registration(poll: &Poll, token: Token, ready: Ready, opt: PollOpt)
 // to verify that a Poll object isn't already registered to a different socket,
 // they use skinny::selector_id(poll).
 //
-// The transmute is obviously dangerous, but the alternative is to build up
-// a lot of machinery that already exists inside Binding and Overlapped (esp.
-// Binding).
+// The cast is obviously dangerous, but the alternative is to build up a lot of
+// machinery that already exists inside Binding and Overlapped (esp. Binding).
 pub mod skinny {
-    use std::mem;
     use std::sync::{atomic::AtomicUsize, Arc, Condvar, Mutex};
     use mio;
 
+    fn reinterpret_cast<T, U>(obj: &T) -> &U {
+        unsafe { &*(obj as *const T as *const U) }
+    }
+
     pub mod sys {
-        use std::mem;
         use std::sync::{Arc, Mutex};
         use lazycell::AtomicLazyCell;
         use mio::windows::Binding as MiowBinding;
         use miow::iocp::CompletionPort;
+        use super::reinterpret_cast;
 
+        #[derive(Debug)]
         struct Binding {
             selector: AtomicLazyCell<Arc<SelectorInner>>,
         }
 
+        #[derive(Debug)]
         struct BufferPool {
             pool: Vec<Vec<u8>>,
         }
@@ -99,6 +103,7 @@ pub mod skinny {
             }
         }
 
+        #[derive(Debug)]
         pub struct Selector {
             inner: Arc<SelectorInner>,
         }
@@ -110,6 +115,7 @@ pub mod skinny {
             }
         }
 
+        #[derive(Debug)]
         struct SelectorInner {
             /// Unique identifier of the `Selector`
             id: usize,
@@ -125,25 +131,44 @@ pub mod skinny {
             buffers: Mutex<BufferPool>,
         }
 
-        fn as_binding(binding: &MiowBinding) -> &Binding {
-            unsafe { mem::transmute(&binding as *const _ as * const _) }
+        impl AsRef<Binding> for MiowBinding {
+            fn as_ref(&self) -> &Binding {
+                reinterpret_cast(self)
+            }
         }
 
         pub fn get_buffer(binding: &MiowBinding, size: usize) -> Vec<u8> {
-            match as_binding(binding).selector.borrow() {
+            match binding.as_ref().selector.borrow() {
                 Some(i) => i.buffers.lock().unwrap().get(size),
                 None => Vec::with_capacity(size),
             }
         }
 
         pub fn put_buffer(binding: &MiowBinding, buf: Vec<u8>) {
-            if let Some(i) = as_binding(binding).selector.borrow() {
+            if let Some(i) = binding.as_ref().selector.borrow() {
                 i.buffers.lock().unwrap().put(buf);
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use mio;
+
+            fn mem_addr<T>(obj: &T) -> usize {
+                obj as *const T as usize
+            }
+
+            #[test]
+            fn binding_as_ref_returns_ref_to_same_memory() {
+                let binding = &mio::windows::Binding::new();
+                let mybinding = binding.as_ref();
+                assert_eq!(mem_addr(binding), mem_addr(mybinding));
             }
         }
     }
 
     #[allow(dead_code)]
+    #[derive(Debug)]
     struct Poll {
         // Platform specific IO selector
         selector: sys::Selector,
@@ -162,21 +187,25 @@ pub mod skinny {
         condvar: Condvar,
     }
 
+    #[derive(Debug)]
     struct ReadinessQueue {
         #[allow(dead_code)]
         inner: Arc<ReadinessQueueInner>,
     }
 
+    #[derive(Debug)]
     struct ReadinessQueueInner {}
 
-    fn as_poll(poll: &mio::Poll) -> &Poll {
-        unsafe { mem::transmute(&poll as *const _ as *const _) }
+    impl AsRef<Poll> for mio::Poll {
+        fn as_ref(&self) -> &Poll {
+            reinterpret_cast(self)
+        }
     }
 
     // accessors
 
     pub fn selector_id(poll: &mio::Poll) -> usize {
-        as_poll(poll).selector.id()
+        poll.as_ref().selector.id()
     }
 
     pub fn get_buffer(binding: &mio::windows::Binding, size: usize) -> Vec<u8> {
@@ -185,5 +214,21 @@ pub mod skinny {
 
     pub fn put_buffer(binding: &mio::windows::Binding, buf: Vec<u8>) {
         sys::put_buffer(binding, buf)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use mio;
+
+        fn mem_addr<T>(obj: &T) -> usize {
+            obj as *const T as usize
+        }
+
+        #[test]
+        fn poll_as_ref_returns_ref_to_same_memory() {
+            let poll = &mio::Poll::new().unwrap();
+            let mypoll = poll.as_ref();
+            assert_eq!(mem_addr(poll), mem_addr(mypoll));
+        }
     }
 }
