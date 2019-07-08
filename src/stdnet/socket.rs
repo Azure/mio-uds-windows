@@ -7,15 +7,17 @@ use std::os::raw::{c_int, c_ulong};
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::ptr;
 use std::sync::Once;
+use std::time::Duration;
 
 use super::{cvt, last_error};
 
 use kernel32::{GetCurrentProcessId, SetHandleInformation};
 use winapi::{socklen_t, AF_UNIX, DWORD, FIONBIO, HANDLE, INVALID_SOCKET,
     SO_ERROR, SOCK_STREAM, SOCKADDR, SOCKET, SOL_SOCKET, WSADATA,
-    WSAPROTOCOL_INFOW};
+    WSAPROTOCOL_INFOW, INFINITE};
 // use winapi::WSACleanup;
 use ws2_32::getsockopt as c_getsockopt;
+use ws2_32::setsockopt as c_setsockopt;
 use ws2_32::{accept, closesocket, ioctlsocket, recv, send, shutdown,
     WSADuplicateSocketW, WSASocketW, WSAStartup};
 
@@ -180,6 +182,42 @@ impl Socket {
             Ok(Some(io::Error::from_raw_os_error(raw as i32)))
         }
     }
+
+    pub fn set_timeout(&self, dur: Option<Duration>, kind: c_int) -> io::Result<()> {
+        let timeout = match dur {
+            Some(dur) => {
+                let timeout = dur2timeout(dur);
+                if timeout == 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                              "cannot set a 0 duration timeout"));
+                }
+                timeout
+            }
+            None => 0
+        };
+        setsockopt(self, SOL_SOCKET, kind, timeout)
+    }
+
+    pub fn timeout(&self, kind: c_int) -> io::Result<Option<Duration>> {
+        let raw: DWORD = getsockopt(self, SOL_SOCKET, kind)?;
+        if raw == 0 {
+            Ok(None)
+        } else {
+            let secs = raw / 1000;
+            let nsec = (raw % 1000) * 1000000;
+            Ok(Some(Duration::new(secs as u64, nsec as u32)))
+        }
+    }
+}
+
+pub fn setsockopt<T>(sock: &Socket, opt: c_int, val: c_int,
+                     payload: T) -> io::Result<()> {
+    unsafe {
+        let payload = &payload as *const T as *const _;
+        cvt(c_setsockopt(sock.as_raw_socket(), opt, val, payload,
+                          mem::size_of::<T>() as socklen_t))?;
+        Ok(())
+    }
 }
 
 pub fn getsockopt<T: Copy>(sock: &Socket, opt: c_int,
@@ -193,6 +231,27 @@ pub fn getsockopt<T: Copy>(sock: &Socket, opt: c_int,
         assert_eq!(len as usize, mem::size_of::<T>());
         Ok(slot)
     }
+}
+
+fn dur2timeout(dur: Duration) -> DWORD {
+    // Note that a duration is a (u64, u32) (seconds, nanoseconds) pair, and the
+    // timeouts in windows APIs are typically u32 milliseconds. To translate, we
+    // have two pieces to take care of:
+    //
+    // * Nanosecond precision is rounded up
+    // * Greater than u32::MAX milliseconds (50 days) is rounded up to INFINITE
+    //   (never time out).
+    dur.as_secs().checked_mul(1000).and_then(|ms| {
+        ms.checked_add((dur.subsec_nanos() as u64) / 1_000_000)
+    }).and_then(|ms| {
+        ms.checked_add(if dur.subsec_nanos() % 1_000_000 > 0 {1} else {0})
+    }).map(|ms| {
+        if ms > <DWORD>::max_value() as u64 {
+            INFINITE
+        } else {
+            ms as DWORD
+        }
+    }).unwrap_or(INFINITE)
 }
 
 impl Drop for Socket {

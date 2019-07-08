@@ -5,8 +5,10 @@ use std::net::Shutdown;
 use std::os::raw::c_int;
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::path::Path;
+use std::time::Duration;
 
 use ws2_32::{bind, connect, getpeername, getsockname, listen};
+use winapi::{SO_RCVTIMEO, SO_SNDTIMEO};
 
 use super::socket::{init, Socket};
 use super::{c, cvt, sockaddr_un, SocketAddr, from_sockaddr_un};
@@ -166,6 +168,72 @@ impl UnixStream {
     /// ```
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         self.0.shutdown(how)
+    }
+
+    /// Sets the read timeout to the timeout specified.
+    ///
+    /// If the value specified is `None`, then `read` calls will block
+    /// indefinitely. An `Err` is returned if the zero `Duration` is
+    /// passed to this method.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mio_uds_windows::net::UnixStream;
+    ///
+    /// let socket = UnixStream::connect("/tmp/sock").unwrap();
+    /// socket.set_read_timeout(None).expect("Couldn't set read timeout");
+    /// ```
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_timeout(dur, SO_RCVTIMEO)
+    }
+
+    /// Sets the write timeout to the timeout specified.
+    ///
+    /// If the value specified is `None`, then `write` calls will block
+    /// indefinitely. An `Err` is returned if the zero `Duration` is
+    /// passed to this method.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mio_uds_windows::net::UnixStream;
+    ///
+    /// let socket = UnixStream::connect("/tmp/sock").unwrap();
+    /// socket.set_write_timeout(None).expect("Couldn't set write timeout");
+    /// ```
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_timeout(dur, SO_SNDTIMEO)
+    }
+
+    /// Returns the read timeout of this socket.
+    /// 
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mio_uds_windows::net::UnixStream;
+    ///
+    /// let socket = UnixStream::connect("/tmp/sock").unwrap();
+    /// socket.set_read_timeout(None).expect("Couldn't set read timeout");
+    /// assert_eq!(socket.read_timeout().unwrap(), None);
+    /// ```
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.timeout(SO_RCVTIMEO)
+    }
+
+    /// Returns the write timeout of this socket.
+    /// 
+        /// # Examples
+    ///
+    /// ```no_run
+    /// use mio_uds_windows::net::UnixStream;
+    ///
+    /// let socket = UnixStream::connect("/tmp/sock").unwrap();
+    /// socket.set_write_timeout(None).expect("Couldn't set write timeout");
+    /// assert_eq!(socket.write_timeout().unwrap(), None);
+    /// ```
+    pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.timeout(SO_SNDTIMEO)
     }
 }
 
